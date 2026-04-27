@@ -41,14 +41,20 @@ subprocess fan-out the existing pipeline uses.
 
 ## Accuracy
 
-Validated on **200 stratified samples** across the REDACTED, REDACTED, REDACTED, REDACTED,
-REDACTED, and REDACTED cohorts (`bench/samples.tsv`). Per-feature Pearson correlation
-vs upstream output already living in each sample's `stregaOuts/<sample>/`.
+Stratified-sampled across the REDACTED, REDACTED, REDACTED, REDACTED, REDACTED, and REDACTED cohorts
+(`bench/samples.tsv`). Per-feature Pearson correlation against the upstream
+`<sample>.bamReadCount.txt` files already living in each sample's
+`stregaOuts/<sample>/`.
+
+**11 of 13 metrics reproduce upstream at r = 1.0000 (≥ 99.9% byte-exact)**.
+The two Q2-related metrics (legacy Illumina sequencing-tail flags) match
+`num_q2_containing_reads` at r ≈ 0.96 and `avg_distance_to_q2_start_in_q2_reads`
+at r ≈ 0.85 — see Limitations below.
 
 ![correlation grid](bench/results/latest/plots/correlation_grid.png)
 
 See [`bench/results/latest/SUMMARY.md`](bench/results/latest/SUMMARY.md) for
-the per-metric correlation table from the latest run.
+the full per-metric correlation table from the latest run.
 
 ## Performance
 
