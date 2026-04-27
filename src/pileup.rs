@@ -1,11 +1,10 @@
 use crate::bed::Site;
 use crate::metrics::{base_index, PerBaseRecord, ReadScan, BASE_LABELS};
 use anyhow::{Context, Result};
-use rust_htslib::bam::{self, IndexedReader, Read};
+use rust_htslib::bam::{IndexedReader, Read};
 use rust_htslib::faidx;
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::Path;
-use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy)]
 pub struct PileupConfig {
@@ -59,13 +58,9 @@ pub fn process_chunk(
         .with_context(|| format!("opening FASTA {}", fasta_path.display()))?;
 
     // Build a lookup of which 1-based positions on this chrom we want to emit.
-    let want: HashMap<u32, ()> = sites.iter().map(|s| (s.pos, ())).collect();
+    let want: HashSet<u32> = sites.iter().map(|s| s.pos).collect();
     let want_min = min_pos;
     let want_max = max_pos;
-
-    // Per-read scan cache (keyed by qname-hash) so the MD/Q2/SA work is done
-    // once per read even if the read spans multiple queried positions.
-    let mut scan_cache: HashMap<u64, Arc<ReadScan>> = HashMap::new();
 
     let mut results: Vec<PositionResult> = Vec::with_capacity(sites.len());
 
@@ -79,7 +74,7 @@ pub fn process_chunk(
         if one_based < want_min || one_based > want_max {
             continue;
         }
-        if !want.contains_key(&one_based) {
+        if !want.contains(&one_based) {
             continue;
         }
 
@@ -120,10 +115,11 @@ pub fn process_chunk(
                 continue;
             }
 
-            // Per-read scan: the cache version (keyed by qname+flag+pos) was
-            // miscomputing for some reads with soft-clip CIGARs in deep
-            // regions; recompute per pileup hit until that's understood.
-            let _ = (&scan_cache, qname_hash); // keep imports alive
+            // Per-read scan: an earlier cached version (keyed by qname+flag)
+            // miscomputed for some reads with soft-clip CIGARs in deep
+            // regions, producing pf=-30 etc. Recomputing per pileup hit is
+            // ~5x slower but correct. The hot fields are all u8/u32 with
+            // simple inlinable arithmetic, so the cost is bounded.
             let scan = ReadScan::from_record(&record);
 
             let obs = scan.observation_at(qpos, base_qual);
@@ -149,18 +145,6 @@ fn fetch_ref_base(fasta: &faidx::Reader, chrom: &str, zero_based: u32) -> Result
         .fetch_seq(chrom, zero_based as usize, zero_based as usize)
         .with_context(|| format!("fetching ref {}:{}", chrom, zero_based))?;
     Ok(if seq.is_empty() { b'N' } else { seq[0].to_ascii_uppercase() })
-}
-
-fn qname_hash(qname: &[u8], flag: u16) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    qname.hash(&mut h);
-    flag.hash(&mut h);
-    h.finish()
-}
-
-pub fn _silence_unused() {
-    let _ = bam::Header::new();
 }
 
 pub fn format_position(result: &PositionResult, out: &mut String) {
