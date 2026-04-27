@@ -54,7 +54,9 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Smoke-test the image
-        if: github.event_name == 'pull_request'
         run: |
-          docker build -t bam-readcount-rs:test .
-          docker run --rm bam-readcount-rs:test --help
+          docker build -t bam-readcount-rs:smoke .
+          docker run --rm bam-readcount-rs:smoke --help
+          # Round-trip via apptainer compatibility layer is exercised on HPC,
+          # not in CI; we just confirm the binary executes and prints its
+          # CLI here.

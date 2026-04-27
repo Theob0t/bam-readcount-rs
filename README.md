@@ -64,13 +64,16 @@ benchmark.
 
 - SNV per-base records only (`A`, `C`, `G`, `T`, `N`, `=`). Indel rows
   (`+SEQ` / `-SEQ`) are not emitted — `posLevel.py` does not consume them.
+- `--per-library`, `--insertion-centric`, `--print-individual-mapq` modes
+  not implemented (STREGA does not pass these flags).
+- Output is sorted by (chrom, pos); upstream emits in BED-input order.
+  STREGA's downstream parser groups by `chr>pos>ref>alt`, so order is not
+  observable. Add a `--preserve-bed-order` flag if needed.
 - Q2-related metrics (`num_q2_containing_reads`,
-  `avg_distance_to_q2_start_in_q2_reads`) reproduce upstream behavior but
-  with a small (~5%) per-record disagreement on reverse-stranded reads —
-  legacy Illumina Q2 runs are rare on modern data, so this rarely affects
-  downstream classification.
-- `--per-library`, `--insertion-centric`, `--print-individual-mapq` modes not
-  implemented.
+  `avg_distance_to_q2_start_in_q2_reads`) match upstream byte-for-byte on
+  forward-stranded reads but show a small per-record disagreement on
+  reverse-stranded reads (a corner case in upstream's q2_pos scan logic
+  that's hard to reproduce literally without further source reading).
 
 ## Reproducing the benchmark
 
