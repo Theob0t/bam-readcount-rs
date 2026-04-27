@@ -120,12 +120,11 @@ pub fn process_chunk(
                 continue;
             }
 
-            // Get-or-build the per-read scan.
-            let key = qname_hash(record.qname(), record.flags());
-            let scan = scan_cache
-                .entry(key)
-                .or_insert_with(|| Arc::new(ReadScan::from_record(&record)))
-                .clone();
+            // Per-read scan: the cache version (keyed by qname+flag+pos) was
+            // miscomputing for some reads with soft-clip CIGARs in deep
+            // regions; recompute per pileup hit until that's understood.
+            let _ = (&scan_cache, qname_hash); // keep imports alive
+            let scan = ReadScan::from_record(&record);
 
             let obs = scan.observation_at(qpos, base_qual);
             let bi = base_index(read_base);

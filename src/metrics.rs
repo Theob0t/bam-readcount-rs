@@ -34,7 +34,12 @@ impl PerBaseRecord {
         self.count += 1;
         self.sum_mq += obs.mapq as u64;
         self.sum_bq += obs.base_qual as u64;
-        self.sum_se_mq += obs.se_mapq as u64;
+        if let Some(v) = obs.se_mapq {
+            self.sum_se_mq += v as u64;
+        }
+        // Else: read is properly-paired but missing SM tag — upstream skips
+        // the SE-MAPQ contribution but still counts the read in `count`,
+        // which drags the average DOWN. Match that exactly.
         if obs.is_reverse {
             self.num_minus += 1;
         } else {
@@ -98,7 +103,11 @@ impl PerBaseRecord {
 #[derive(Debug, Clone)]
 pub struct ReadObservation {
     pub mapq: u8,
-    pub se_mapq: u8,
+    /// Single-ended mapping quality contribution. None means "skip" — upstream
+    /// semantics: a properly-paired read with no SM tag does NOT contribute
+    /// to the running sum (but still counts toward read_count, dragging the
+    /// average down).
+    pub se_mapq: Option<u8>,
     pub base_qual: u8,
     pub is_reverse: bool,
     pub pos_as_fraction: f64,
@@ -115,7 +124,11 @@ pub struct ReadObservation {
 #[derive(Debug, Clone)]
 pub struct ReadScan {
     pub mapq: u8,
-    pub se_mapq: u8,
+    /// SE-MAPQ contribution per upstream BasicStat::process_read:
+    ///   - if BAM_FPROPER_PAIR set: SM-tag value (Some), or None when the
+    ///     SM tag is absent (read counts but SE-MAPQ contribution skipped)
+    ///   - else (unpaired/improper): MAPQ (Some)
+    pub se_mapq: Option<u8>,
     pub is_reverse: bool,
     pub l_qseq: u32,
     pub clipped_length: u32, // l_qseq - left_soft - right_soft
@@ -179,9 +192,16 @@ impl ReadScan {
 
         let sum_mismatch_quals = scan_mismatch_qualities_via_md(record, qual, &cigar_view);
 
+        let is_proper_pair = (record.flags() & 0x2) != 0;
+        let se_mapq = if is_proper_pair {
+            extract_sm_tag(record) // None when SM missing → upstream skips
+        } else {
+            Some(mapq)
+        };
+
         Self {
             mapq,
-            se_mapq: extract_se_mapq(record).unwrap_or(mapq),
+            se_mapq,
             is_reverse,
             l_qseq,
             clipped_length,
@@ -227,6 +247,7 @@ impl ReadScan {
             mapq: self.mapq,
             se_mapq: self.se_mapq,
             base_qual,
+            // ReadScan.se_mapq is already Option<u8>; just propagate.
             is_reverse: self.is_reverse,
             pos_as_fraction,
             mismatch_fraction,
@@ -378,9 +399,7 @@ fn compute_three_prime_index(
     tpi
 }
 
-fn extract_se_mapq(record: &Record) -> Option<u8> {
-    // Upstream uses the "SM" (single-ended mapping quality) tag if present,
-    // else falls back to MAPQ. Note this is "SM" not "SA" — a different tag.
+fn extract_sm_tag(record: &Record) -> Option<u8> {
     match record.aux(b"SM") {
         Ok(rust_htslib::bam::record::Aux::I32(n)) => Some(n.clamp(0, 255) as u8),
         Ok(rust_htslib::bam::record::Aux::U32(n)) => Some(n.min(255) as u8),
