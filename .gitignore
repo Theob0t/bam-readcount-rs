@@ -2,13 +2,21 @@
 /sif
 **/*.rs.bk
 .DS_Store
-bench/results/
 bench/work/
 *.sif
 *.bam.bai
+
+# Bench results: ignore the large raw/joined dirs but keep the small
+# committed artifacts (plots, SUMMARY, per_feature_corr, notebook).
+bench/results/*/raw/
+bench/results/*/joined/
+bench/results/*/logs/
+bench/results/*/parse.log
+bench/results/*/notebook.log
 
 # Test fixture BAMs (regenerate via bench/capture_fixture.sh if needed)
 tests/data/fixtures/*/region.bam
 tests/data/fixtures/*/region.bam.bai
 tests/data/fixtures/*/got.txt
 tests/data/fixtures/*/brc.stderr
+bench/results/*/benchmark.ipynb
