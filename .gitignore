@@ -1,0 +1,14 @@
+/target
+/sif
+**/*.rs.bk
+.DS_Store
+bench/results/
+bench/work/
+*.sif
+*.bam.bai
+
+# Test fixture BAMs (regenerate via bench/capture_fixture.sh if needed)
+tests/data/fixtures/*/region.bam
+tests/data/fixtures/*/region.bam.bai
+tests/data/fixtures/*/got.txt
+tests/data/fixtures/*/brc.stderr
