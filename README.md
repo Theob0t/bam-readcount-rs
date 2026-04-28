@@ -41,9 +41,8 @@ subprocess fan-out the existing pipeline uses.
 
 ## Accuracy
 
-Stratified-sampled across the REDACTED, REDACTED, REDACTED, REDACTED, REDACTED, and REDACTED cohorts
-(`bench/samples.tsv` lists 200 candidates; the latest run scored **35** of them
-× **42.4 M** joined `(sample, position, base)` rows). Per-feature Pearson
+Stratified-sampled across 6 different cohorts (latest run: **35** samples ×
+**42.4 M** joined `(sample, position, base)` rows). Per-feature Pearson
 correlation against the upstream `<sample>.bamReadCount.txt` files already
 living in each sample's `stregaOuts/<sample>/`.
 
@@ -80,17 +79,17 @@ For STREGA's downstream XGBoost classifier (which sees `diff_num_q2` and
 useful. If true byte-equality is needed, see the comments at
 [`src/metrics.rs::observation_at`](src/metrics.rs).
 
-![correlation grid](bench/results/latest/plots/correlation_grid.png)
+![correlation grid](bench/results/200samples_final/plots/correlation_grid.png)
 
-See [`bench/results/latest/SUMMARY.md`](bench/results/latest/SUMMARY.md) for
+See [`bench/results/200samples_final/SUMMARY.md`](bench/results/200samples_final/SUMMARY.md) for
 the full per-metric table including MAE and exact-match %.
 
 ## Performance
 
 Median across 35 samples: **151 s wall** at 4 threads, **508 MB peak RSS**.
-Largest REDACTED sample (1.7 M queried sites): ~22 min wall, ~3 GB RSS.
+Largest sample (1.7 M queried sites): ~22 min wall, ~3 GB RSS.
 
-![runtime / memory](bench/results/latest/plots/runtime_memory.png)
+![runtime / memory](bench/results/200samples_final/plots/runtime_memory.png)
 
 Single-binary, multi-threaded. Replaces the existing
 `scripts/bamreadscounts_parallel.py` wrapper (which spawned 22 subprocess
@@ -104,25 +103,21 @@ resource budget the new tool replaces.
 - SNV per-base records only (`A`, `C`, `G`, `T`, `N`, `=`). Indel rows
   (`+SEQ` / `-SEQ`) are not emitted — `posLevel.py` does not consume them.
 - `--per-library`, `--insertion-centric`, `--print-individual-mapq` modes
-  not implemented (STREGA does not pass these flags).
+  not implemented.
 - Output is sorted by (chrom, pos); upstream emits in BED-input order.
-  STREGA's downstream parser groups by `chr>pos>ref>alt`, so order is not
-  observable. Add a `--preserve-bed-order` flag if needed.
+  Add a `--preserve-bed-order` flag if needed.
 - Q2 metric arithmetic differs from upstream on reverse-strand reads —
   see the [Accuracy](#accuracy) section above for the actual correlations
   (r ≈ 0.96 / 0.84) and the underlying upstream quirk.
 
-## Reproducing the benchmark
+## Benchmark methodology
 
-```bash
-# 1. (Re-)pick samples (cached at bench/samples.tsv; deterministic seed)
-python bench/sample_picker.py
-
-# 2. Submit the SLURM array (runs the tool against each sample, captures
-#    runtime + RSS via /usr/bin/time; reference output is read from
-#    <sample>/<sample>.bamReadCount.txt — no need to re-run upstream)
-bash bench/submit_array.sh
-
-# 3. After the array completes the aggregator runs automatically and produces
-#    bench/results/<runid>/{benchmark.ipynb,SUMMARY.md,plots/*.png}.
-```
+The benchmark runs the tool against each sample on a SLURM array, capturing
+wall time and peak RSS via `/usr/bin/time`. The reference for accuracy is the
+upstream `<sample>.bamReadCount.txt` already present in each sample's
+`stregaOuts/` directory, so upstream `bam-readcount` is not re-executed. Once
+the array completes, an aggregator joins the two outputs on
+`(sample, chrom, pos, base)` and emits per-feature Pearson correlations,
+per-sample runtime/RSS, and the plots and `SUMMARY.md` under
+`bench/results/<runid>/`. The sample list itself is not published — cohort
+data is access-controlled.
