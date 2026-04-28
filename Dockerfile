@@ -1,5 +1,5 @@
 # Multi-stage build: rust+libclang for compilation, slim debian for runtime.
-FROM rust:1.83-bookworm AS builder
+FROM rust:1.86-bookworm AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         clang \
