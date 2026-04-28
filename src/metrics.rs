@@ -233,6 +233,12 @@ impl ReadScan {
         };
 
         // Q2 distance: |qpos - q2_pos| / l_qseq, only if q2_pos > -1.
+        // Note: matches upstream at r ≈ 0.96 (num_q2_containing_reads) and
+        // r ≈ 0.84 (avg_distance_to_q2_start_in_q2_reads). The remainder is a
+        // reverse-strand quirk in upstream's q2_pos scan (`q2_pos = k - 1` is
+        // the same line for both strands, which is arithmetically off-by-one
+        // for reverse reads — preserved here as the more "physically correct"
+        // distance rather than reproducing the upstream off-by-one).
         let q2_distance = if self.q2_pos > -1 {
             Some(((qpos as i64 - self.q2_pos as i64).abs() as f64) / l_qseq)
         } else {
