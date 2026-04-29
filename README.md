@@ -154,3 +154,53 @@ counts can be misleading if you don't:
    array tasks wrote to the same `raw/<sample_id>/` directory, so output
    was byte-identical, not silently lost. The manifest is now deduped to
    1955 rows so the published count matches the unique sample count.
+
+4. **17 samples excluded — upstream ref-fasta has `N` at scattered
+   positions.** During the 2000-sample run we found 265,638 rows
+   (≈0.011% of 2.32B) where `ref_avg_sum_mismatch_qualities = 0` but
+   `rs_avg_sum_mismatch_qualities > 0`. The reverse never happens. Every
+   one of those rows came from one of 17 specific samples (the other
+   1938 were exact). At each affected position the upstream output's
+   column-3 reference base is `N`, while rs reads the same position from
+   the GATK-bundle hg38 (`Homo_sapiens_assembly38.fasta`) and gets the
+   actual base — confirmed via `samtools faidx`. When `bam-readcount`
+   sees `N` at a position, it cannot decide which read bases are
+   mismatches, so it emits `0` for `avg_sum_mismatch_qualities` at every
+   per-base entry of that position. The conclusion is that the
+   `<sample>.bamReadCount.txt` files for these 17 samples were produced
+   by a STREGA pipeline run that received an N-masked reference fasta
+   for one or two chromosomes; the BAMs themselves are clean (CIGAR / MD
+   / NM are all internally consistent). The samples are hardcoded in
+   `EXCLUDED_SAMPLES` in `bench/parse_all.py` and skipped at parse time.
+
+   The 17 IDs and where they hit:
+
+   | sample_id | hits | chroms |
+   |---|---:|---|
+   | SRR24300862 | 41,827 | chr1, chr10, chr14 |
+   | SRR24300907 | 30,711 | chr11 |
+   | SRR24300960 | 23,914 | chr12 |
+   | SRR24301034 | 23,753 | chr11 |
+   | SRR18510378 | 22,020 | chr15 |
+   | SRR24301052 | 16,882 | chr13, chr15 |
+   | SRR18511183 | 15,721 | chr10 |
+   | SRR18510375 | 15,454 | chr10 |
+   | SRR24301031 | 13,950 | chr15 |
+   | SRR24300841 | 13,727 | chr11, chr14, chr16 |
+   | SRR18720197 | 12,853 | chr11 |
+   | SRR18720231 | 11,060 | chr16 |
+   | SRR24300936 | 8,842 | chr11, chr13 |
+   | SRR18719369 | 5,746 | chr16 |
+   | SRR24300925 | 5,316 | chr15 |
+   | FS01628935 | 3,861 | chr12 |
+   | 11224322 | 1 | chr1 |
+
+   Note: `11224322` is a separate, benign case — its single row is a
+   `0.005`-boundary printf rounding artifact (rs prints `0.01`, upstream
+   `0.00`), not the `N`-fasta issue. It's listed here for completeness
+   so all 17 samples that show any disagreement on the metric are
+   excluded together.
+
+   To re-aggregate the existing `bench/results/2000samples/` run with
+   this exclusion in effect, delete the 17 corresponding parquets
+   under `joined/` and re-run the benchmark notebook.

@@ -40,6 +40,21 @@ EMPTY_SCHEMA = {
     **{c: pl.Float64 for c in INFO},
 }
 
+# Samples whose upstream `<sample>.bamReadCount.txt` was generated against a
+# different reference fasta than the GATK-bundle hg38 the rs run uses. At
+# scattered positions on one or two chromosomes per sample, upstream's column-3
+# reference base is `N` while rs reports the actual base — bam-readcount emits
+# avg_sum_mismatch_qualities=0 for every base entry at those positions. The 17
+# IDs below account for all 265,638 such rows in the 2000-sample run; every
+# other sample has zero. See README "Caveats" #4.
+EXCLUDED_SAMPLES = frozenset({
+    "SRR24300862", "SRR24300907", "SRR24300960", "SRR24301034",
+    "SRR18510378", "SRR24301052", "SRR18511183", "SRR18510375",
+    "SRR24301031", "SRR24300841", "SRR18720197", "SRR18720231",
+    "SRR24300936", "SRR18719369", "SRR24300925", "FS01628935",
+    "11224322",
+})
+
 
 def parse_brc(path: Path) -> pl.DataFrame:
     text = Path(path).read_text()
@@ -69,6 +84,8 @@ def parse_brc(path: Path) -> pl.DataFrame:
 
 def parse_pair(sample_dir: Path, joined_dir: Path) -> str:
     sid = sample_dir.name
+    if sid in EXCLUDED_SAMPLES:
+        return f"exclude {sid} (ref-fasta-N — see README caveat 4)"
     out = joined_dir / f"{sid}.parquet"
     if out.exists():
         return f"skip {sid}"

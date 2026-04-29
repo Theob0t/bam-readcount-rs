@@ -10,6 +10,7 @@ bench/work/
 # committed artifacts (plots, SUMMARY, per_feature_corr, notebook).
 bench/results/*/raw/
 bench/results/*/joined/
+bench/results/*/excluded/
 bench/results/*/logs/
 bench/results/*/parse.log
 bench/results/*/notebook.log
