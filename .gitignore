@@ -13,6 +13,12 @@ bench/results/*/joined/
 bench/results/*/logs/
 bench/results/*/parse.log
 bench/results/*/notebook.log
+bench/results/*/notebook_manual.log
+bench/results/*/agg_bg.log
+bench/results/*/parse_all.log
+
+# Local Claude Code settings
+.claude/
 
 # Test fixture BAMs (regenerate via bench/capture_fixture.sh if needed)
 tests/data/fixtures/*/region.bam
@@ -20,3 +26,10 @@ tests/data/fixtures/*/region.bam.bai
 tests/data/fixtures/*/got.txt
 tests/data/fixtures/*/brc.stderr
 bench/results/*/benchmark.ipynb
+
+# Sample-picking glue: contains cohort names + sample IDs, do NOT commit
+bench/run_one_sample.sh
+bench/submit_array.sh
+bench/sample_picker.py
+bench/samples.tsv
+bench/results/.latest_runid

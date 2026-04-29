@@ -79,17 +79,25 @@ For STREGA's downstream XGBoost classifier (which sees `diff_num_q2` and
 useful. If true byte-equality is needed, see the comments at
 [`src/metrics.rs::observation_at`](src/metrics.rs).
 
-![correlation grid](bench/results/200samples_final/plots/correlation_grid.png)
+![all metrics — concordance](bench/results/2000samples/plots/correlation_unified.png)
 
-See [`bench/results/200samples_final/SUMMARY.md`](bench/results/200samples_final/SUMMARY.md) for
+All 13 metrics overlaid on a single normalized axis — points on/near `y=x`
+mean upstream and `bam-readcount-rs` agree. Each metric is its own color
+with its Pearson r in the legend.
+
+Per-metric breakdown (separate scatter per feature, real units):
+
+![correlation grid](bench/results/2000samples/plots/correlation_grid.png)
+
+See [`bench/results/2000samples/SUMMARY.md`](bench/results/2000samples/SUMMARY.md) for
 the full per-metric table including MAE and exact-match %.
 
 ## Performance
 
-Median across 35 samples: **151 s wall** at 4 threads, **508 MB peak RSS**.
-Largest sample (1.7 M queried sites): ~22 min wall, ~3 GB RSS.
+Median across 1955 samples: **~67 s wall** at 8 threads, **~500 MB peak RSS**.
+Slowest sample: **~9.3 min wall** (high-coverage exome).
 
-![runtime / memory](bench/results/200samples_final/plots/runtime_memory.png)
+![runtime / memory](bench/results/2000samples/plots/runtime_memory.png)
 
 Single-binary, multi-threaded. Replaces the existing
 `scripts/bamreadscounts_parallel.py` wrapper (which spawned 22 subprocess
@@ -121,3 +129,37 @@ the array completes, an aggregator joins the two outputs on
 per-sample runtime/RSS, and the plots and `SUMMARY.md` under
 `bench/results/<runid>/`. The sample list itself is not published — cohort
 data is access-controlled.
+
+### Caveats
+
+A few things worth knowing about the join semantics, because the raw row
+counts can be misleading if you don't:
+
+1. **Per-position coverage is 1:1, not partial.** Across the 1955-sample
+   run, the unique `(chrom, pos)` set produced by `bam-readcount-rs` is
+   identical to upstream's in every sample we spot-checked — `pos_diff = 0`.
+   `bam-readcount-rs` emits exactly one row per unique position; upstream
+   emits one row per `(BED-interval, position)` pair. So when raw line
+   counts diverge (typically ref ~5–6% larger), it's *upstream duplicating
+   rows*, not `bam-readcount-rs` dropping coverage. Per-base differences do
+   exist (e.g., a low-count alt called by one and not the other) but are
+   <1% of rows.
+
+2. **Upstream emits duplicate position rows when BED intervals overlap.**
+   For a position `X` covered by two overlapping intervals in the input
+   BED, upstream emits `X` twice — byte-identical rows, since the
+   underlying pile-up is the same. The STREGA pipeline that produced our
+   reference `<sample>.bamReadCount.txt` files passes a BED with overlaps,
+   so this happens at most positions: 1910 / 1955 samples (97.7%) had
+   `joined > rs_lines` from this duplication alone. The benchmark parser
+   (`bench/parse_all.py`) now deduplicates ref-side rows by
+   `(chrom, pos, base)` before joining. Effect on the published total:
+   **2,380,156,056 → 2,111,126,330 joined rows (−11.30%)**. Correlations
+   are computed from the deduped parquets.
+
+3. **Sample manifest dedup.** `bench/samples.tsv` originally listed 1962
+   rows but only 1955 unique `sample_id`s — 7 samples appeared in two
+   cohort assignments (CCF and ileum) with identical bam/bed paths. Both
+   array tasks wrote to the same `raw/<sample_id>/` directory, so output
+   was byte-identical, not silently lost. The manifest is now deduped to
+   1955 rows so the published count matches the unique sample count.

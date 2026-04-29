@@ -33,8 +33,7 @@ for d in ${RUNDIR}/raw/*; do
     echo "  parsing $sid..."
     $PY ${REPO}/bench/parse_brc.py "$d/ref.txt" "$d/rs.txt" "$out" 2>&1 \
         | tee -a ${RUNDIR}/parse.log &
-    # Serial parses to keep memory tame (some samples have 3M rows)
-    if (( $(jobs -r | wc -l) >= 2 )); then
+    if (( $(jobs -r | wc -l) >= ${PARALLEL:-2} )); then
         wait -n
     fi
 done

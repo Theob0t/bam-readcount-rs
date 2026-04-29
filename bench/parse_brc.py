@@ -31,40 +31,45 @@ INFO = [
     "avg_distance_to_effective_3p_end",
 ]
 
+EMPTY_SCHEMA = {
+    "chrom": pl.Utf8,
+    "pos": pl.Int64,
+    "base": pl.Utf8,
+    **{c: pl.Float64 for c in INFO},
+}
+
 
 def parse_brc(path: Path) -> pl.DataFrame:
-    """Stream-parse one bam-readcount text file into a long-form polars frame.
-    One row per (chrom, pos, base) where count > 0.
+    """Vectorized polars parse of one bam-readcount text file.
+    One row per (chrom, pos, base) where count > 0; '=' base skipped.
     """
-    chroms, poss, bases = [], [], []
-    cols = {c: [] for c in INFO}
-    with open(path) as f:
-        for line in f:
-            parts = line.rstrip("\n").split("\t")
-            if len(parts) < 5:
-                continue
-            chrom = parts[0]
-            pos = int(parts[1])
-            for field in parts[4:]:
-                vals = field.split(":")
-                base = vals[0]
-                if base == "=":
-                    continue
-                if int(vals[1]) == 0:
-                    continue
-                chroms.append(chrom)
-                poss.append(pos)
-                bases.append(base)
-                for k, v in zip(INFO, vals[1:]):
-                    cols[k].append(float(v))
-    df = pl.DataFrame(
-        {
-            "chrom": chroms,
-            "pos": poss,
-            "base": bases,
-            **cols,
-        }
-    )
+    text = Path(path).read_text()
+    if not text.strip():
+        return pl.DataFrame(schema=EMPTY_SCHEMA)
+
+    lines = text.rstrip("\n").split("\n")
+    df = pl.DataFrame({"line": lines})
+    df = df.with_columns(pl.col("line").str.split("\t").alias("parts"))
+    df = df.filter(pl.col("parts").list.len() >= 5)
+
+    df = df.select(
+        pl.col("parts").list.get(0).alias("chrom"),
+        pl.col("parts").list.get(1).cast(pl.Int64).alias("pos"),
+        pl.col("parts").list.slice(4).alias("base_fields"),
+    ).explode("base_fields")
+
+    df = df.with_columns(pl.col("base_fields").str.split(":").alias("vals"))
+    df = df.filter(pl.col("vals").list.len() >= len(INFO) + 1)
+    df = df.with_columns(pl.col("vals").list.get(0).alias("base"))
+    df = df.filter(pl.col("base") != "=")
+    df = df.with_columns(pl.col("vals").list.get(1).cast(pl.Int64).alias("_count"))
+    df = df.filter(pl.col("_count") > 0)
+
+    metric_cols = [
+        pl.col("vals").list.get(i + 1).cast(pl.Float64).alias(name)
+        for i, name in enumerate(INFO)
+    ]
+    df = df.with_columns(metric_cols).select(["chrom", "pos", "base"] + INFO)
     return df
 
 
@@ -74,7 +79,8 @@ def main():
         Path(sys.argv[2]),
         Path(sys.argv[3]),
     )
-    ref_df = parse_brc(ref_path).rename({c: f"ref_{c}" for c in INFO})
+    ref_df = parse_brc(ref_path).unique(subset=["chrom", "pos", "base"], keep="first")
+    ref_df = ref_df.rename({c: f"ref_{c}" for c in INFO})
     rs_df = parse_brc(rs_path).rename({c: f"rs_{c}" for c in INFO})
     joined = ref_df.join(rs_df, on=["chrom", "pos", "base"], how="inner")
     out_path.parent.mkdir(parents=True, exist_ok=True)
