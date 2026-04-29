@@ -58,26 +58,11 @@ living in each sample's `stregaOuts/<sample>/`.
 | avg_distance_to_q2_start_in_q2_reads | 0.84026 |
 
 The two Q2 fields measure something real (legacy Illumina Phred-2 sentinel
-runs at the read 3′ end) and the lower-but-non-trivial correlations carry
-genuine signal — they're kept in the output as-is, not zeroed out.
-Why these aren't 1.0:
-
-- **Modern sequencers rarely emit Q2 runs.** GA/HiSeq pre-2012 used Q2 as a
-  "trim-from-here" sentinel; NovaSeq and similar emit calibrated quality
-  scores all the way to the 3′ end. Most reads in modern STREGA cohorts
-  produce no Q2 run at all, so the metrics are mostly 0 in both outputs.
-- **Reverse-strand `q2_pos` quirk.** Upstream's
-  [`fetch_func` in bamreadcount.cpp](https://github.com/genome/bam-readcount/blob/master/src/exe/bam-readcount/bamreadcount.cpp)
-  uses the same `q2_pos = k - 1` line for both strands; for reverse reads
-  this is arithmetically off-by-one. We emit the more "physically correct"
-  reverse-strand `q2_pos`, which is why the per-record numbers don't match
-  upstream byte-for-byte even when both detect a Q2 run. The signal is the
-  same — the offset is just different.
-
-For STREGA's downstream XGBoost classifier (which sees `diff_num_q2` and
-`diff_avg_distance_to_q2`), this is enough overlap to keep the features
-useful. If true byte-equality is needed, see the comments at
-[`src/metrics.rs::observation_at`](src/metrics.rs).
+runs at the read 3′ end). Modern sequencers rarely emit Q2 runs — GA/HiSeq
+pre-2012 used Q2 as a "trim-from-here" sentinel; NovaSeq and similar emit
+calibrated quality scores all the way to the 3′ end. Most reads in modern
+STREGA cohorts produce no Q2 run at all, so these metrics are mostly 0 in
+both outputs.
 
 ![all metrics — concordance](bench/results/2000samples/plots/correlation_unified.png)
 
@@ -123,9 +108,6 @@ tool replaces.
   not implemented.
 - Output is sorted by (chrom, pos); upstream emits in BED-input order.
   Add a `--preserve-bed-order` flag if needed.
-- Q2 metric arithmetic differs from upstream on reverse-strand reads —
-  see the [Accuracy](#accuracy) section above for the actual correlations
-  (r ≈ 0.96 / 0.84) and the underlying upstream quirk.
 
 ## Benchmark methodology
 

@@ -136,8 +136,10 @@ pub struct ReadScan {
     #[allow(dead_code)]
     pub right_clip: u32,     // upstream coord = l_qseq - right_soft (kept for symmetry/debug)
     /// q2_pos in qpos coordinates (signed; -1 means none). For forward reads
-    /// `q2_pos = l_qseq - 2` whenever the very last base is not Q2 (this is
-    /// the upstream behavior, see fetch_func() in bamreadcount.cpp).
+    /// `q2_pos = l_qseq - 2` whenever the very last base is not Q2; for
+    /// reverse reads the scan starts at qpos 0 (including soft-clipped
+    /// bases), so `q2_pos = -1` when qual[0] != 2 (upstream behavior, see
+    /// fetch_func() in bamreadcount.cpp).
     pub q2_pos: i32,
     pub three_prime_index: i32,
     pub nm: u32,
@@ -187,7 +189,7 @@ impl ReadScan {
         };
 
         let qual = record.qual();
-        let q2_pos = find_q2_pos(qual, is_reverse, left_clip);
+        let q2_pos = find_q2_pos(qual, is_reverse);
         let three_prime_index = compute_three_prime_index(l_qseq, is_reverse, left_clip as i32, right_clip as i32, q2_pos);
 
         let sum_mismatch_quals = scan_mismatch_qualities_via_md(record, qual, &cigar_view);
@@ -233,12 +235,6 @@ impl ReadScan {
         };
 
         // Q2 distance: |qpos - q2_pos| / l_qseq, only if q2_pos > -1.
-        // Note: matches upstream at r ≈ 0.96 (num_q2_containing_reads) and
-        // r ≈ 0.84 (avg_distance_to_q2_start_in_q2_reads). The remainder is a
-        // reverse-strand quirk in upstream's q2_pos scan (`q2_pos = k - 1` is
-        // the same line for both strands, which is arithmetically off-by-one
-        // for reverse reads — preserved here as the more "physically correct"
-        // distance rather than reproducing the upstream off-by-one).
         let q2_distance = if self.q2_pos > -1 {
             Some(((qpos as i64 - self.q2_pos as i64).abs() as f64) / l_qseq)
         } else {
@@ -353,15 +349,19 @@ fn scan_mismatch_qualities_via_md(record: &Record, qual: &[u8], cigar: &[Cigar])
     sum
 }
 
-/// Find q2_pos exactly as upstream's fetch_func does.
-fn find_q2_pos(qual: &[u8], is_reverse: bool, left_clip: u32) -> i32 {
+/// Find q2_pos exactly as upstream's fetch_func does. For reverse reads
+/// the scan starts at `k = 0` (NOT `left_clip`) — upstream walks through
+/// the soft-clipped region too, so a non-Q2 base at qpos 0 yields
+/// `q2_pos = -1`. Starting at `left_clip` over-classified reverse reads
+/// with a left soft clip as having a Q2 run.
+fn find_q2_pos(qual: &[u8], is_reverse: bool) -> i32 {
     let l = qual.len() as i32;
     if l == 0 {
         return -1;
     }
     let mut q2_pos: i32 = -1;
     let (mut k, increment): (i32, i32) = if is_reverse {
-        (left_clip as i32, 1)
+        (0, 1)
     } else {
         (l - 1, -1)
     };
