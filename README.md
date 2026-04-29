@@ -99,12 +99,21 @@ Slowest sample: **~9.3 min wall** (high-coverage exome).
 
 ![runtime / memory](bench/results/2000samples/plots/runtime_memory.png)
 
+The middle panel is the original `bam-readcount` wall time recovered from the
+STREGA Nextflow trace files for the same samples (the per-task `realtime` of
+`VARIANT_ANALYSIS:BAM_READCOUNTS`, which is the parallel wrapper's wall time
+across its 22 chromosome subprocesses, not single-process upstream). Median is
+**~1180 s** vs `bam-readcount-rs` median **67 s** on the same 1955-sample
+overlap — about **14.6× faster** end-to-end at the pipeline-process level.
+
+Cohort labels are anonymized to `cohort_1..cohort_6` since the underlying
+sample IDs are access-controlled.
+
 Single-binary, multi-threaded. Replaces the existing
 `scripts/bamreadscounts_parallel.py` wrapper (which spawned 22 subprocess
-copies of upstream `bam-readcount` per sample, then concatenated). Upstream
-timing for an end-to-end pipeline comparison comes from Nextflow trace files,
-not this benchmark — see `STREGA/conf/base.config:135` for the per-process
-resource budget the new tool replaces.
+copies of upstream `bam-readcount` per sample, then concatenated) — see
+`STREGA/conf/base.config:135` for the per-process resource budget the new
+tool replaces.
 
 ## Limitations (v1)
 
