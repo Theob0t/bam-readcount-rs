@@ -34,3 +34,15 @@ bench/submit_array.sh
 bench/sample_picker.py
 bench/samples.tsv
 bench/results/.latest_runid
+bench/excluded_samples.txt
+bench/results/*/per_sample_metrics.tsv
+bench/results/*/SUMMARY.md
+# Smoke / 200-sample preliminary runs aren't shipped with the README
+bench/results/200samples_l2l3/
+bench/results/200samples_*/
+
+# Local Python / Slurm scratch
+bench/__pycache__/
+bench/logs/
+bench/smoke_l2l3/
+slurm/

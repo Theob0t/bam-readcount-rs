@@ -1,4 +1,4 @@
-use rust_htslib::bam::record::{Cigar, Record};
+use rust_htslib::bam::record::Record;
 use std::fmt::Write;
 
 /// One per-base record at one position. The 13 metrics after `count` follow the
@@ -119,27 +119,17 @@ pub struct ReadObservation {
 }
 
 /// Per-read scratch values (the upstream "Zm" tag fields, computed inline).
-/// Computed once per read regardless of how many of the read's aligned bases
-/// land in the BED.
+/// Computed once per read, then reused for every wanted aligned position the
+/// read covers. The previous implementation recomputed this per-pileup-hit,
+/// which on deep samples ran 5-10x more often than necessary.
 #[derive(Debug, Clone)]
 pub struct ReadScan {
     pub mapq: u8,
-    /// SE-MAPQ contribution per upstream BasicStat::process_read:
-    ///   - if BAM_FPROPER_PAIR set: SM-tag value (Some), or None when the
-    ///     SM tag is absent (read counts but SE-MAPQ contribution skipped)
-    ///   - else (unpaired/improper): MAPQ (Some)
     pub se_mapq: Option<u8>,
     pub is_reverse: bool,
     pub l_qseq: u32,
     pub clipped_length: u32, // l_qseq - left_soft - right_soft
     pub left_clip: u32,      // = left_soft
-    #[allow(dead_code)]
-    pub right_clip: u32,     // upstream coord = l_qseq - right_soft (kept for symmetry/debug)
-    /// q2_pos in qpos coordinates (signed; -1 means none). For forward reads
-    /// `q2_pos = l_qseq - 2` whenever the very last base is not Q2; for
-    /// reverse reads the scan starts at qpos 0 (including soft-clipped
-    /// bases), so `q2_pos = -1` when qual[0] != 2 (upstream behavior, see
-    /// fetch_func() in bamreadcount.cpp).
     pub q2_pos: i32,
     pub three_prime_index: i32,
     pub nm: u32,
@@ -149,33 +139,59 @@ pub struct ReadScan {
     pub sum_mismatch_quals: u32,
 }
 
+// CIGAR op codes per BAM spec.
+const OP_MATCH: u8 = 0;
+const OP_INS: u8 = 1;
+const OP_DEL: u8 = 2;
+const OP_REFSKIP: u8 = 3;
+const OP_SOFT_CLIP: u8 = 4;
+const OP_HARD_CLIP: u8 = 5;
+#[allow(dead_code)]
+const OP_PAD: u8 = 6;
+const OP_EQUAL: u8 = 7;
+const OP_DIFF: u8 = 8;
+
+#[inline(always)]
+pub fn cigar_decode(packed: u32) -> (u8, u32) {
+    ((packed & 0xf) as u8, packed >> 4)
+}
+
 impl ReadScan {
     pub fn from_record(record: &Record) -> Self {
         let mapq = record.mapq();
         let is_reverse = record.is_reverse();
         let l_qseq = record.seq_len() as u32;
 
-        // Walk CIGAR for left_soft / right_soft. Hard clips are NOT subtracted
-        // (and don't appear in l_qseq).
-        let cigar = record.cigar();
-        let cigar_view: Vec<Cigar> = cigar.iter().copied().collect();
+        // Soft-clip layout from raw_cigar (no Vec<Cigar> allocation).
+        let raw = record.raw_cigar();
+        let n = raw.len();
         let mut left_soft: u32 = 0;
         let mut right_soft: u32 = 0;
-        let n = cigar_view.len();
-        for (i, op) in cigar_view.iter().enumerate() {
-            if let Cigar::SoftClip(l) = op {
-                if i == 0 || (i == 1 && matches!(cigar_view[0], Cigar::HardClip(_))) {
-                    left_soft += *l;
-                } else if i == n - 1
-                    || (i == n - 2 && matches!(cigar_view[n - 1], Cigar::HardClip(_)))
-                {
-                    right_soft += *l;
+        if n >= 1 {
+            let (op0, len0) = cigar_decode(raw[0]);
+            if op0 == OP_SOFT_CLIP {
+                left_soft += len0;
+            }
+            if n >= 2 && op0 == OP_HARD_CLIP {
+                let (op1, len1) = cigar_decode(raw[1]);
+                if op1 == OP_SOFT_CLIP {
+                    left_soft += len1;
+                }
+            }
+            let (opn, lenn) = cigar_decode(raw[n - 1]);
+            if opn == OP_SOFT_CLIP {
+                right_soft += lenn;
+            }
+            if n >= 2 && opn == OP_HARD_CLIP {
+                let (opnm1, lennm1) = cigar_decode(raw[n - 2]);
+                if opnm1 == OP_SOFT_CLIP {
+                    right_soft += lennm1;
                 }
             }
         }
         let clipped_length = l_qseq.saturating_sub(left_soft + right_soft);
-        let left_clip = left_soft;
-        let right_clip = l_qseq.saturating_sub(right_soft);
+        let left_clip = left_soft as i32;
+        let right_clip = (l_qseq.saturating_sub(right_soft)) as i32;
 
         // NM tag — used only for avg_num_mismatches_as_fraction.
         let nm = match record.aux(b"NM") {
@@ -190,9 +206,17 @@ impl ReadScan {
 
         let qual = record.qual();
         let q2_pos = find_q2_pos(qual, is_reverse);
-        let three_prime_index = compute_three_prime_index(l_qseq, is_reverse, left_clip as i32, right_clip as i32, q2_pos);
+        let three_prime_index =
+            compute_three_prime_index(l_qseq, is_reverse, left_clip, right_clip, q2_pos);
 
-        let sum_mismatch_quals = scan_mismatch_qualities_via_md(record, qual, &cigar_view);
+        // MD walk — synchronized with raw_cigar in a single pass; no
+        // aligned_to_read materialization.
+        let sum_mismatch_quals = match record.aux(b"MD") {
+            Ok(rust_htslib::bam::record::Aux::String(s)) => {
+                scan_mismatch_qualities_streaming(s.as_bytes(), qual, raw)
+            }
+            _ => 0,
+        };
 
         let is_proper_pair = (record.flags() & 0x2) != 0;
         let se_mapq = if is_proper_pair {
@@ -207,8 +231,7 @@ impl ReadScan {
             is_reverse,
             l_qseq,
             clipped_length,
-            left_clip,
-            right_clip,
+            left_clip: left_soft,
             q2_pos,
             three_prime_index,
             nm,
@@ -249,7 +272,6 @@ impl ReadScan {
             mapq: self.mapq,
             se_mapq: self.se_mapq,
             base_qual,
-            // ReadScan.se_mapq is already Option<u8>; just propagate.
             is_reverse: self.is_reverse,
             pos_as_fraction,
             mismatch_fraction,
@@ -261,110 +283,128 @@ impl ReadScan {
     }
 }
 
-/// Walk MD tag with CIGAR + qualities. Returns the per-read sum of mismatch
-/// base qualities, where adjacent mismatches collapse to MAX base qual within
-/// a run (upstream bamreadcount.cpp:138-199 behavior).
-fn scan_mismatch_qualities_via_md(record: &Record, qual: &[u8], cigar: &[Cigar]) -> u32 {
-    let md = match record.aux(b"MD") {
-        Ok(rust_htslib::bam::record::Aux::String(s)) => s.to_string(),
-        _ => return 0,
-    };
-
-    // Build mapping aligned_idx -> read_idx (BAM seq index). MATCH/EQUAL/DIFF
-    // ops consume both. INS/SOFTCLIP consume read only. DEL/REF_SKIP consume ref only.
-    let seq_len = record.seq_len();
-    let mut aligned_to_read: Vec<usize> = Vec::with_capacity(seq_len);
-    let mut read_idx: usize = 0;
-    for op in cigar {
-        match op {
-            Cigar::Match(l) | Cigar::Equal(l) | Cigar::Diff(l) => {
-                for _ in 0..*l {
-                    aligned_to_read.push(read_idx);
-                    read_idx += 1;
-                }
-            }
-            Cigar::Ins(l) | Cigar::SoftClip(l) => {
-                read_idx += *l as usize;
-            }
-            _ => {}
-        }
-    }
-
+/// Walk MD synchronously with raw cigar to compute per-read sum of mismatch
+/// base qualities. Adjacent mismatches (consecutive read positions) collapse
+/// to MAX qual within a run (upstream bamreadcount.cpp:138-199 behavior).
+///
+/// Streaming: no `aligned_to_read: Vec<usize>` allocation, no MD pre-parse. We
+/// keep a tiny state machine over the MD bytes (number-of-pending-matches +
+/// byte cursor) and step it by 1 each time we encounter an M/=/X aligned
+/// position in CIGAR.
+fn scan_mismatch_qualities_streaming(md: &[u8], qual: &[u8], raw_cigar: &[u32]) -> u32 {
     let mut sum: u32 = 0;
     let mut last_mm_pos: i32 = -1;
     let mut last_mm_qual: u32 = 0;
 
-    let bytes = md.as_bytes();
-    let mut aligned_cursor: usize = 0;
-    let mut i = 0;
-    while i < bytes.len() {
-        let c = bytes[i];
-        if c.is_ascii_digit() {
-            let mut j = i;
-            while j < bytes.len() && bytes[j].is_ascii_digit() {
-                j += 1;
-            }
-            let n: usize = std::str::from_utf8(&bytes[i..j]).unwrap_or("0").parse().unwrap_or(0);
-            aligned_cursor += n;
-            i = j;
-        } else if c == b'^' {
-            i += 1;
-            while i < bytes.len() && bytes[i].is_ascii_alphabetic() {
-                i += 1;
-            }
-        } else if c.is_ascii_alphabetic() {
-            // Mismatch at current aligned position. Look up the read position.
-            if aligned_cursor < aligned_to_read.len() {
-                let read_pos = aligned_to_read[aligned_cursor];
-                if read_pos < qual.len() {
-                    let q = qual[read_pos] as u32;
-                    if last_mm_pos != -1 {
-                        if last_mm_pos as usize + 1 != read_pos {
-                            // previous run ends; flush
-                            sum += last_mm_qual;
-                            last_mm_qual = q;
-                            last_mm_pos = read_pos as i32;
-                        } else {
-                            // adjacent: keep the maximum qual in this run
-                            if last_mm_qual < q {
+    let mut md_pos: usize = 0;
+    let mut pending_match: u32 = 0;
+    let mut read_idx: u32 = 0;
+
+    for &packed in raw_cigar {
+        let (op, len) = cigar_decode(packed);
+        match op {
+            OP_MATCH | OP_EQUAL | OP_DIFF => {
+                for _ in 0..len {
+                    let is_mismatch = md_advance_one(md, &mut md_pos, &mut pending_match);
+                    if is_mismatch {
+                        if (read_idx as usize) < qual.len() {
+                            let q = qual[read_idx as usize] as u32;
+                            if last_mm_pos != -1 && (last_mm_pos as u32) + 1 == read_idx {
+                                if q > last_mm_qual {
+                                    last_mm_qual = q;
+                                }
+                            } else {
+                                if last_mm_pos != -1 {
+                                    sum += last_mm_qual;
+                                }
                                 last_mm_qual = q;
                             }
-                            last_mm_pos = read_pos as i32;
+                            last_mm_pos = read_idx as i32;
                         }
-                    } else {
-                        last_mm_pos = read_pos as i32;
-                        last_mm_qual = q;
                     }
+                    read_idx += 1;
                 }
             }
-            aligned_cursor += 1;
-            i += 1;
-        } else {
-            i += 1;
+            OP_INS | OP_SOFT_CLIP => {
+                read_idx += len;
+            }
+            OP_DEL => {
+                md_consume_deletion(md, &mut md_pos, len);
+            }
+            // RefSkip/HardClip/Pad: no MD or read advance for our purposes.
+            _ => {}
         }
     }
+
     if last_mm_pos != -1 {
         sum += last_mm_qual;
     }
     sum
 }
 
+#[inline]
+fn md_advance_one(md: &[u8], pos: &mut usize, pending_match: &mut u32) -> bool {
+    if *pending_match > 0 {
+        *pending_match -= 1;
+        return false;
+    }
+    while *pos < md.len() {
+        let c = md[*pos];
+        if c.is_ascii_digit() {
+            let mut n: u32 = 0;
+            while *pos < md.len() && md[*pos].is_ascii_digit() {
+                n = n.saturating_mul(10).saturating_add((md[*pos] - b'0') as u32);
+                *pos += 1;
+            }
+            if n == 0 {
+                continue; // zero-length match, retry
+            }
+            *pending_match = n - 1;
+            return false;
+        } else if c == b'^' {
+            // Defensive: shouldn't appear here (caller should consume_deletion
+            // before walking past a CIGAR D op). Skip silently.
+            *pos += 1;
+            while *pos < md.len() && md[*pos].is_ascii_alphabetic() {
+                *pos += 1;
+            }
+            continue;
+        } else if c.is_ascii_alphabetic() {
+            *pos += 1;
+            return true;
+        } else {
+            *pos += 1;
+        }
+    }
+    false // MD exhausted — treat as match
+}
+
+#[inline]
+fn md_consume_deletion(md: &[u8], pos: &mut usize, len: u32) {
+    while *pos < md.len() && md[*pos] == b'0' {
+        *pos += 1;
+    }
+    if *pos < md.len() && md[*pos] == b'^' {
+        *pos += 1;
+        let mut consumed: u32 = 0;
+        while consumed < len && *pos < md.len() && md[*pos].is_ascii_alphabetic() {
+            *pos += 1;
+            consumed += 1;
+        }
+    }
+}
+
 /// Find q2_pos exactly as upstream's fetch_func does. For reverse reads
 /// the scan starts at `k = 0` (NOT `left_clip`) — upstream walks through
 /// the soft-clipped region too, so a non-Q2 base at qpos 0 yields
-/// `q2_pos = -1`. Starting at `left_clip` over-classified reverse reads
-/// with a left soft clip as having a Q2 run.
+/// `q2_pos = -1`.
 fn find_q2_pos(qual: &[u8], is_reverse: bool) -> i32 {
     let l = qual.len() as i32;
     if l == 0 {
         return -1;
     }
     let mut q2_pos: i32 = -1;
-    let (mut k, increment): (i32, i32) = if is_reverse {
-        (0, 1)
-    } else {
-        (l - 1, -1)
-    };
+    let (mut k, increment): (i32, i32) = if is_reverse { (0, 1) } else { (l - 1, -1) };
     while q2_pos < 0 && k >= 0 && k < l {
         if qual[k as usize] != 2 {
             q2_pos = k - 1;
@@ -375,8 +415,6 @@ fn find_q2_pos(qual: &[u8], is_reverse: bool) -> i32 {
     q2_pos
 }
 
-/// `three_prime_index` matches upstream bamreadcount.cpp: clamped to right_clip
-/// (forward) or left_clip (reverse), then pulled inward by q2_pos.
 fn compute_three_prime_index(
     l_qseq: u32,
     is_reverse: bool,
