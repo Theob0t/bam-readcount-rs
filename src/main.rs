@@ -96,6 +96,15 @@ fn main() -> Result<()> {
     let bam_path = args.bam.clone();
     let fasta_path = args.reference.clone();
 
+    // Pre-build the .fai on the main thread. If absent, htslib's fai_load
+    // builds it on first faidx open; with N workers spawning at once we'd
+    // race on that build, ending up with a partially-populated in-memory
+    // index ("sequence not found") and a downstream capacity-overflow panic.
+    drop(
+        faidx::Reader::from_path(&fasta_path)
+            .with_context(|| format!("opening FASTA {}", fasta_path.display()))?,
+    );
+
     let mut workers = Vec::with_capacity(n_workers);
     for _ in 0..n_workers {
         let work_rx = work_rx.clone();
